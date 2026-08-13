@@ -53,6 +53,10 @@ export default function Home({ profile, onLogout }: HomeProps) {
   const [editingWord, setEditingWord] = useState<Word | null>(null)
   const [editEnglish, setEditEnglish] = useState('')
   const [editMeaning, setEditMeaning] = useState('')
+  const [isAdding, setIsAdding] = useState(false)
+  const [addEnglish, setAddEnglish] = useState('')
+  const [addMeaning, setAddMeaning] = useState('')
+  const [addingWord, setAddingWord] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   const isSuperAdmin = profile.role === 'SUPER_ADMIN'
@@ -183,6 +187,64 @@ export default function Home({ profile, onLogout }: HomeProps) {
     }
   }
 
+  const startAddWord = () => {
+    setIsAdding(true)
+    setAddEnglish('')
+    setAddMeaning('')
+  }
+
+  const closeAdd = () => {
+    setIsAdding(false)
+    setAddEnglish('')
+    setAddMeaning('')
+  }
+
+  const saveAddWord = async () => {
+    if (!selectedRoundId) return
+
+    setAddingWord(true)
+    setError(null)
+
+    try {
+      // get current max word_order for the round
+      const { data: maxData, error: maxError } = await supabase
+        .from('words')
+        .select('word_order')
+        .eq('round_id', selectedRoundId)
+        .order('word_order', { ascending: false })
+        .limit(1)
+
+      if (maxError) {
+        throw new Error(maxError.message || '최대 단어 순서 조회 실패')
+      }
+
+      const maxOrder = (maxData && (maxData as any)[0]?.word_order) ?? 0
+      const newOrder = (typeof maxOrder === 'number' ? maxOrder : parseInt(maxOrder || '0', 10)) + 1
+
+      const { error: insertError } = await supabase
+        .from('words')
+        .insert({
+          round_id: selectedRoundId,
+          word_order: newOrder,
+          english: addEnglish,
+          meaning: addMeaning,
+          created_by: profile.id,
+          updated_by: profile.id,
+        })
+
+      if (insertError) {
+        throw new Error(insertError.message || '단어 추가에 실패했습니다.')
+      }
+
+      closeAdd()
+      loadWords(selectedRoundId)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '단어 추가 중 오류가 발생했습니다.')
+    } finally {
+      setAddingWord(false)
+    }
+  }
+
   useEffect(() => {
     loadWordBooks()
   }, [profile.organization_id, isSuperAdmin])
@@ -289,7 +351,7 @@ export default function Home({ profile, onLogout }: HomeProps) {
                 <p>단어가 없습니다.</p>
               )}
               {canManageRounds ? (
-                <button type="button" className="secondary-button" disabled>
+                <button type="button" className="secondary-button" onClick={startAddWord}>
                   + 단어 추가
                 </button>
               ) : null}
@@ -330,6 +392,37 @@ export default function Home({ profile, onLogout }: HomeProps) {
               </button>
               <button type="button" className="primary-button" onClick={saveWordEdit} disabled={savingWord}>
                 {savingWord ? '저장 중…' : '저장'}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+      {isAdding ? (
+        <div className="modal-overlay">
+          <div className="modal">
+            <h3>단어 추가</h3>
+            <label>
+              영어
+              <input
+                type="text"
+                value={addEnglish}
+                onChange={(event) => setAddEnglish(event.target.value)}
+              />
+            </label>
+            <label>
+              뜻
+              <textarea
+                rows={4}
+                value={addMeaning}
+                onChange={(event) => setAddMeaning(event.target.value)}
+              />
+            </label>
+            <div className="modal-actions">
+              <button type="button" className="secondary-button" onClick={closeAdd}>
+                취소
+              </button>
+              <button type="button" className="primary-button" onClick={saveAddWord} disabled={addingWord}>
+                {addingWord ? '저장 중…' : '저장'}
               </button>
             </div>
           </div>
