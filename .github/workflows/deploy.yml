@@ -7,6 +7,13 @@ on:
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
 
     steps:
       - name: Checkout
@@ -28,10 +35,17 @@ jobs:
           VITE_BASE: "/${{ github.event.repository.name }}/"
         run: npm run build
 
+      - name: Setup Pages
+        # Configure Pages (creates pages environment and required setup)
+        uses: actions/configure-pages@v5
+
       - name: Upload artifact for GitHub Pages
-        uses: actions/upload-pages-artifact@v1
+        # Use current stable upload-pages-artifact (v3) to avoid deprecated internal upload-artifact v3
+        uses: actions/upload-pages-artifact@v3
         with:
           path: ./dist
 
       - name: Deploy to GitHub Pages
-        uses: actions/deploy-pages@v1
+        id: deployment
+        # Use a compatible deploy-pages version (v5) which works with upload-pages-artifact@v3
+        uses: actions/deploy-pages@v5
