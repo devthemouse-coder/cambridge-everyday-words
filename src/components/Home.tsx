@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { supabase } from '../lib/supabase'
 import type { Profile } from '../types/auth'
 
@@ -50,17 +50,30 @@ export default function Home({ profile, onLogout }: HomeProps) {
   const [loadingRounds, setLoadingRounds] = useState(false)
   const [loadingWords, setLoadingWords] = useState(false)
   const [savingWord, setSavingWord] = useState(false)
+  const [deletingWord, setDeletingWord] = useState(false)
   const [editingWord, setEditingWord] = useState<Word | null>(null)
+  const [wordToDelete, setWordToDelete] = useState<Word | null>(null)
   const [editEnglish, setEditEnglish] = useState('')
   const [editMeaning, setEditMeaning] = useState('')
   const [isAdding, setIsAdding] = useState(false)
   const [addEnglish, setAddEnglish] = useState('')
   const [addMeaning, setAddMeaning] = useState('')
   const [addingWord, setAddingWord] = useState(false)
+  const [lastAddedWordId, setLastAddedWordId] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const addEnglishRef = useRef<HTMLInputElement | null>(null)
+  const editEnglishRef = useRef<HTMLInputElement | null>(null)
 
   const isSuperAdmin = profile.role === 'SUPER_ADMIN'
   const canManageRounds = isSuperAdmin || profile.can_manage_rounds
+  const organizationNameMap: Record<string, string> = {
+    '1723e057-5aab-4f48-a1fd-fe1fa0a9fa97': '캠브리지 영어학원',
+  }
+  const organizationDisplayName = isSuperAdmin
+    ? '전체 학원 데이터'
+    : profile.organization_id
+      ? organizationNameMap[profile.organization_id] ?? '학원 미지정'
+      : '학원 미지정'
 
   const selectedBook = useMemo(
     () => wordBooks.find((book) => book.id === selectedBookId) ?? null,
@@ -76,11 +89,15 @@ export default function Home({ profile, onLogout }: HomeProps) {
     setError(null)
 
     try {
-      let query: any = supabase.from('word_books')
-      if (!isSuperAdmin) {
+      let query = supabase.from('word_books').select('*')
+
+      if (!isSuperAdmin && profile.organization_id) {
         query = query.eq('organization_id', profile.organization_id)
       }
-      const { data, error: fetchError } = await query.select('*').order('title', { ascending: true }).order('level', { ascending: true })
+
+      const { data, error: fetchError } = await query
+        .order('title', { ascending: true })
+        .order('level', { ascending: true })
 
       if (fetchError) {
         throw new Error(fetchError.message || '단어장 조회에 실패했습니다.')
@@ -160,6 +177,10 @@ export default function Home({ profile, onLogout }: HomeProps) {
 
   const saveWordEdit = async () => {
     if (!editingWord) return
+    if (editEnglish.trim() === '') {
+      setError('영어 단어를 입력하세요.')
+      return
+    }
 
     setSavingWord(true)
     setError(null)
@@ -199,11 +220,50 @@ export default function Home({ profile, onLogout }: HomeProps) {
     setAddMeaning('')
   }
 
+  const openDeleteConfirm = (word: Word) => {
+    setWordToDelete(word)
+  }
+
+  const closeDeleteConfirm = () => {
+    setWordToDelete(null)
+  }
+
+  const deleteWord = async () => {
+    if (!wordToDelete || !selectedRoundId) return
+
+    setDeletingWord(true)
+    setError(null)
+
+    try {
+      const { error: deleteError } = await supabase
+        .from('words')
+        .delete()
+        .eq('id', wordToDelete.id)
+
+      if (deleteError) {
+        throw new Error(deleteError.message || '단어 삭제에 실패했습니다.')
+      }
+
+      closeDeleteConfirm()
+      await loadWords(selectedRoundId)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '단어 삭제 중 오류가 발생했습니다.')
+    } finally {
+      setDeletingWord(false)
+    }
+  }
+
   const saveAddWord = async () => {
     if (!selectedRoundId) return
 
     setAddingWord(true)
     setError(null)
+
+    if (addEnglish.trim() === '') {
+      setError('영어 단어를 입력하세요.')
+      setAddingWord(false)
+      return
+    }
 
     try {
       // get current max word_order for the round
@@ -221,7 +281,7 @@ export default function Home({ profile, onLogout }: HomeProps) {
       const maxOrder = (maxData && (maxData as any)[0]?.word_order) ?? 0
       const newOrder = (typeof maxOrder === 'number' ? maxOrder : parseInt(maxOrder || '0', 10)) + 1
 
-      const { error: insertError } = await supabase
+      const { data: inserted, error: insertError } = await supabase
         .from('words')
         .insert({
           round_id: selectedRoundId,
@@ -231,19 +291,112 @@ export default function Home({ profile, onLogout }: HomeProps) {
           created_by: profile.id,
           updated_by: profile.id,
         })
+        .select()
+        .single()
 
       if (insertError) {
         throw new Error(insertError.message || '단어 추가에 실패했습니다.')
       }
 
+      // remember newly inserted id to highlight (force to string to match rendered ids)
+      const _insertedId = (inserted as any)?.id ?? null
+      setLastAddedWordId(_insertedId ? String(_insertedId) : null)
+
       closeAdd()
-      loadWords(selectedRoundId)
+      await loadWords(selectedRoundId)
+
+      // clear highlight after a short delay
+      setTimeout(() => setLastAddedWordId(null), 5000)
     } catch (err) {
       setError(err instanceof Error ? err.message : '단어 추가 중 오류가 발생했습니다.')
     } finally {
       setAddingWord(false)
     }
   }
+
+  useEffect(() => {
+    if (isAdding) {
+      setTimeout(() => addEnglishRef.current?.focus(), 50)
+    }
+  }, [isAdding])
+
+  useEffect(() => {
+    // focus edit english when editing
+    if (editingWord) {
+      setTimeout(() => editEnglishRef.current?.focus(), 50)
+    }
+
+    const handler = (e: KeyboardEvent) => {
+      // Escape closes modals
+      if (e.key === 'Escape') {
+        if (editingWord) {
+          closeEdit()
+          e.preventDefault()
+        } else if (isAdding) {
+          closeAdd()
+          e.preventDefault()
+        } else if (wordToDelete) {
+          closeDeleteConfirm()
+          e.preventDefault()
+        }
+        return
+      }
+
+      if (e.key !== 'Enter') return
+
+      // If Enter pressed, only trigger when an input (not textarea) is focused
+      const active = document.activeElement
+      if (!active) return
+
+      const isInput = active instanceof HTMLInputElement
+      const isTextArea = active instanceof HTMLTextAreaElement
+
+      if (isTextArea) {
+        // do nothing: allow newline in textarea
+        return
+      }
+
+      if (!isInput) return
+
+      // prevent double-submit while saving
+      if (editingWord && !savingWord && editEnglish.trim() !== '') {
+        // trigger save
+        e.preventDefault()
+        void saveWordEdit()
+      } else if (isAdding && !addingWord && addEnglish.trim() !== '') {
+        e.preventDefault()
+        void saveAddWord()
+      }
+    }
+
+    if (editingWord || isAdding || wordToDelete) {
+      window.addEventListener('keydown', handler)
+    }
+
+    return () => {
+      window.removeEventListener('keydown', handler)
+    }
+  }, [editingWord, isAdding, wordToDelete, savingWord, addingWord, editEnglish, addEnglish])
+
+  useEffect(() => {
+    if (!lastAddedWordId) return
+
+    // Try to find the newly added element and scroll it into view
+    const scrollToNew = () => {
+      const selector = `[data-word-id="${lastAddedWordId}"]`
+      const el = document.querySelector(selector) as HTMLElement | null
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      }
+    }
+
+    // small delay to ensure DOM rendered
+    const t = window.setTimeout(scrollToNew, 50)
+    // also try immediately
+    scrollToNew()
+
+    return () => window.clearTimeout(t)
+  }, [words, lastAddedWordId])
 
   useEffect(() => {
     loadWordBooks()
@@ -266,9 +419,7 @@ export default function Home({ profile, onLogout }: HomeProps) {
       <div className="home-card">
         <div className="home-header">
           <h1>{profile.display_name}님</h1>
-          <p className="profile-note">
-            {isSuperAdmin ? 'SUPER_ADMIN 전체 데이터' : `학원 ID: ${profile.organization_id ?? '미정'}`}
-          </p>
+          <p className="profile-note">{organizationDisplayName}</p>
         </div>
 
         <div className="learning-layout">
@@ -329,20 +480,30 @@ export default function Home({ profile, onLogout }: HomeProps) {
               ) : words.length > 0 ? (
                 <ul className="word-list">
                   {words.map((word) => (
-                    <li key={word.id} className="word-item">
+                    <li key={word.id} data-word-id={word.id} className={"word-item" + (word.id === lastAddedWordId ? ' added' : '')}>
                       <div className="word-item-content">
                         <strong>{word.word_order}. {word.english}</strong>
                         <p>{word.meaning}</p>
                       </div>
                       {canManageRounds ? (
-                        <button
-                          type="button"
-                          className="edit-icon-button"
-                          onClick={() => startEditWord(word)}
-                          aria-label="단어 수정"
-                        >
-                          ✏️
-                        </button>
+                        <div className="word-item-actions">
+                          <button
+                            type="button"
+                            className="edit-icon-button"
+                            onClick={() => startEditWord(word)}
+                            aria-label="단어 수정"
+                          >
+                            ✏️
+                          </button>
+                          <button
+                            type="button"
+                            className="delete-icon-button"
+                            onClick={() => openDeleteConfirm(word)}
+                            aria-label="단어 삭제"
+                          >
+                            🗑️
+                          </button>
+                        </div>
                       ) : null}
                     </li>
                   ))}
@@ -366,6 +527,34 @@ export default function Home({ profile, onLogout }: HomeProps) {
         </button>
       </div>
 
+      {wordToDelete ? (
+        <div className="modal-overlay">
+          <div className="modal">
+            <h3>단어 삭제</h3>
+            <p className="modal-message">
+              다음 단어를 삭제할까요?
+            </p>
+            <div className="delete-preview">
+              <strong>{wordToDelete.english}</strong>
+              <span>{wordToDelete.meaning}</span>
+            </div>
+            <div className="modal-actions">
+              <button type="button" className="secondary-button" onClick={closeDeleteConfirm}>
+                취소
+              </button>
+              <button
+                type="button"
+                className="danger-button"
+                onClick={deleteWord}
+                disabled={deletingWord}
+              >
+                {deletingWord ? '삭제 중…' : '삭제'}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       {editingWord ? (
         <div className="modal-overlay">
           <div className="modal">
@@ -373,10 +562,24 @@ export default function Home({ profile, onLogout }: HomeProps) {
             <label>
               영어
               <input
+                ref={editEnglishRef}
                 type="text"
                 value={editEnglish}
                 onChange={(event) => setEditEnglish(event.target.value)}
+                className={editEnglish.trim() === '' ? 'invalid' : ''}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !savingWord && editEnglish.trim() !== '') {
+                    e.preventDefault()
+                    void saveWordEdit()
+                  } else if (e.key === 'Escape') {
+                    e.preventDefault()
+                    closeEdit()
+                  }
+                }}
               />
+              {editEnglish.trim() === '' ? (
+                <div className="field-error">영어 단어를 입력하세요.</div>
+              ) : null}
             </label>
             <label>
               뜻
@@ -384,13 +587,24 @@ export default function Home({ profile, onLogout }: HomeProps) {
                 rows={4}
                 value={editMeaning}
                 onChange={(event) => setEditMeaning(event.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Escape') {
+                    e.preventDefault()
+                    closeEdit()
+                  }
+                }}
               />
             </label>
             <div className="modal-actions">
               <button type="button" className="secondary-button" onClick={closeEdit}>
                 취소
               </button>
-              <button type="button" className="primary-button" onClick={saveWordEdit} disabled={savingWord}>
+              <button
+                type="button"
+                className="primary-button"
+                onClick={saveWordEdit}
+                disabled={savingWord || editEnglish.trim() === ''}
+              >
                 {savingWord ? '저장 중…' : '저장'}
               </button>
             </div>
@@ -404,10 +618,24 @@ export default function Home({ profile, onLogout }: HomeProps) {
             <label>
               영어
               <input
+                ref={addEnglishRef}
                 type="text"
                 value={addEnglish}
                 onChange={(event) => setAddEnglish(event.target.value)}
+                className={addEnglish.trim() === '' ? 'invalid' : ''}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !addingWord && addEnglish.trim() !== '') {
+                    e.preventDefault()
+                    void saveAddWord()
+                  } else if (e.key === 'Escape') {
+                    e.preventDefault()
+                    closeAdd()
+                  }
+                }}
               />
+              {addEnglish.trim() === '' ? (
+                <div className="field-error">영어 단어를 입력하세요.</div>
+              ) : null}
             </label>
             <label>
               뜻
@@ -415,13 +643,24 @@ export default function Home({ profile, onLogout }: HomeProps) {
                 rows={4}
                 value={addMeaning}
                 onChange={(event) => setAddMeaning(event.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Escape') {
+                    e.preventDefault()
+                    closeAdd()
+                  }
+                }}
               />
             </label>
             <div className="modal-actions">
               <button type="button" className="secondary-button" onClick={closeAdd}>
                 취소
               </button>
-              <button type="button" className="primary-button" onClick={saveAddWord} disabled={addingWord}>
+              <button
+                type="button"
+                className="primary-button"
+                onClick={saveAddWord}
+                disabled={addingWord || addEnglish.trim() === ''}
+              >
                 {addingWord ? '저장 중…' : '저장'}
               </button>
             </div>
