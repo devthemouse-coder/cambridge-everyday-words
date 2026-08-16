@@ -1,5 +1,30 @@
 import Tesseract from 'tesseract.js'
 
+// Two long-lived workers (one per language) reused across all 20 cell OCR calls.
+// Creating a new worker per call downloaded language models 20 times, freezing the tab.
+const workerPool: Partial<Record<'eng' | 'kor', Tesseract.Worker>> = {}
+
+const getOrCreateWorker = async (language: 'eng' | 'kor'): Promise<Tesseract.Worker> => {
+  if (!workerPool[language]) {
+    const worker = await Tesseract.createWorker(language)
+    await worker.setParameters({
+      tessedit_pageseg_mode: language === 'eng' ? Tesseract.PSM.SINGLE_WORD : Tesseract.PSM.SINGLE_LINE,
+      preserve_interword_spaces: '1',
+    })
+    workerPool[language] = worker
+  }
+  return workerPool[language]!
+}
+
+export const terminateOcrWorkers = async (): Promise<void> => {
+  for (const lang of ['eng', 'kor'] as const) {
+    if (workerPool[lang]) {
+      try { await workerPool[lang]!.terminate() } catch { /* ignore cleanup errors */ }
+      delete workerPool[lang]
+    }
+  }
+}
+
 export const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value))
 
 export const buildEnhancedCanvas = (source: HTMLCanvasElement, scale = 4) => {
@@ -81,17 +106,11 @@ export const cleanKoreanCandidate = (value: string) => {
 }
 
 export const runSingleLineOcr = async (canvas: HTMLCanvasElement, language: 'eng' | 'kor') => {
-  const worker = await Tesseract.createWorker(language)
-
-  await worker.setParameters({
-    tessedit_pageseg_mode: language === 'eng' ? Tesseract.PSM.SINGLE_WORD : Tesseract.PSM.SINGLE_LINE,
-    preserve_interword_spaces: '1',
-  })
-
+  const worker = await getOrCreateWorker(language)
   try {
     const result = await worker.recognize(canvas)
     return result.data.text ?? ''
-  } finally {
-    await worker.terminate()
+  } catch {
+    return ''
   }
 }

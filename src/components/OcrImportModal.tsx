@@ -7,6 +7,7 @@ import {
   cleanKoreanCandidate,
   cropRectFromCanvas,
   runSingleLineOcr,
+  terminateOcrWorkers,
 } from '../lib/ocr/ocrEngine'
 import { getStandardPageCellRects, getStandardPageRect, getStandardPageRowRects } from '../lib/ocr/templateRegions'
 import type { Profile } from '../types/auth'
@@ -71,9 +72,12 @@ const createImageElementFromFile = async (file: File) => {
   }
 }
 
-const parseTemplateWordsFromFile = async (file: File) => {
+const parseTemplateWordsFromFile = async (file: File, onProgress: (pct: number) => void) => {
+  onProgress(5)
   const image = await createImageElementFromFile(file)
+  onProgress(10)
   const alignedPages = await detectAlignedPageRegions(image)
+  onProgress(20)
 
   if (!alignedPages.length) {
     throw new Error('페이지를 찾지 못했습니다. 책 전체가 사진에 들어오도록 다시 촬영해주세요.')
@@ -82,6 +86,9 @@ const parseTemplateWordsFromFile = async (file: File) => {
   const pageRect = getStandardPageRect()
   const rowRects = getStandardPageRowRects(pageRect)
   const pages: Array<{ pageIndex: number; words: OcrDraftWord[]; rawText: string }> = []
+  const totalCells = alignedPages.length * rowRects.length * 2  // pages × rows × (eng + kor)
+  let completedCells = 0
+  const BASE = 20
 
   for (let pageIndex = 0; pageIndex < alignedPages.length; pageIndex += 1) {
     const pageCanvas = alignedPages[pageIndex].canvas
@@ -110,7 +117,15 @@ const parseTemplateWordsFromFile = async (file: File) => {
       const koreanCanvas = buildEnhancedCanvas(koreanCell, 3)
 
       const englishText = cleanEnglishCandidate(await runSingleLineOcr(englishCanvas, 'eng'))
+      completedCells += 1
+      onProgress(BASE + Math.round((completedCells / totalCells) * (100 - BASE)))
+      // Yield to the event loop so the browser can repaint between OCR calls
+      await new Promise<void>((r) => setTimeout(r, 0))
+
       const koreanText = cleanKoreanCandidate(await runSingleLineOcr(koreanCanvas, 'kor'))
+      completedCells += 1
+      onProgress(BASE + Math.round((completedCells / totalCells) * (100 - BASE)))
+      await new Promise<void>((r) => setTimeout(r, 0))
 
       if (englishText || koreanText) {
         lines.push(`${rowIndex + 1}. ${englishText} / ${koreanText}`)
@@ -227,7 +242,7 @@ export default function OcrImportModal({ isOpen, profile, onClose, onImported }:
     setProgress(0)
 
     try {
-      const templateResult = await parseTemplateWordsFromFile(selectedFile)
+      const templateResult = await parseTemplateWordsFromFile(selectedFile, setProgress)
       const parsedWords = chunkWords(templateResult.allWords)
 
       setProgress(100)
@@ -248,6 +263,7 @@ export default function OcrImportModal({ isOpen, profile, onClose, onImported }:
       setError(err instanceof Error ? err.message : 'OCR 처리 중 오류가 발생했습니다.')
     } finally {
       setOcring(false)
+      void terminateOcrWorkers()
     }
   }
 
