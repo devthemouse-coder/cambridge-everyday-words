@@ -1,6 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import Tesseract from 'tesseract.js'
 import { supabase } from '../lib/supabase'
+import { detectAlignedPageRegions } from '../lib/ocr/documentAlignment'
+import {
+  buildEnhancedCanvas,
+  cleanEnglishCandidate,
+  cleanKoreanCandidate,
+  cropRectFromCanvas,
+  runSingleLineOcr,
+} from '../lib/ocr/ocrEngine'
+import { getStandardPageCellRects, getStandardPageRect, getStandardPageRowRects } from '../lib/ocr/templateRegions'
 import type { Profile } from '../types/auth'
 
 export interface OcrDraftWord {
@@ -33,8 +41,6 @@ interface OcrImportModalProps {
   onImported: () => Promise<void> | void
 }
 
-const normalizeWhitespace = (value: string) => value.replace(/\s+/g, ' ').trim()
-
 const buildWordId = () => {
   if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
     return crypto.randomUUID()
@@ -43,124 +49,97 @@ const buildWordId = () => {
   return `word-${Date.now()}-${Math.random().toString(16).slice(2)}`
 }
 
-const parseTitleLevelRound = (rawText: string) => {
-  const lines = rawText
-    .split(/\r?\n/)
-    .map((line) => normalizeWhitespace(line))
-    .filter(Boolean)
-
-  let title = ''
-  let level = ''
-  let roundNumber: number | null = null
-
-  const levelMatch = rawText.match(/(?:level|lv|레벨)\s*[:\-]?\s*([A-Za-z0-9]+(?:\s*[-/][A-Za-z0-9]+)*)/i)
-  if (levelMatch?.[1]) {
-    level = normalizeWhitespace(levelMatch[1])
-  }
-
-  const roundMatch = rawText.match(/(?:round|회차|R\s*\d+|회)\s*[:\-]?\s*(\d+)/i)
-  if (roundMatch?.[1]) {
-    roundNumber = Number.parseInt(roundMatch[1], 10)
-  }
-
-  const possibleTitle = lines.find((line) => {
-    const lower = line.toLowerCase()
-    return !lower.includes('level') && !lower.includes('round') && !lower.includes('회차') && !lower.includes('word') && line.length > 2
-  })
-
-  if (possibleTitle) {
-    title = possibleTitle
-  }
-
-  return { title, level, roundNumber }
-}
-
-const parseWordPairLine = (line: string) => {
-  const trimmed = normalizeWhitespace(line)
-  if (!trimmed) return null
-
-  const englishMeaningPatterns = [
-    /^([A-Za-z][A-Za-z'\- ]+)\s*(?:\/|:|－|–|—|\s{2,}|\t)\s*([가-힣A-Za-z0-9\s.,!?()\-]+)$/,
-    /^([A-Za-z][A-Za-z'\- ]+)\s*[-]\s*([가-힣A-Za-z0-9\s.,!?()\-]+)$/,
-  ]
-
-  for (const pattern of englishMeaningPatterns) {
-    const match = trimmed.match(pattern)
-    if (match) {
-      const english = normalizeWhitespace(match[1])
-      const meaning = normalizeWhitespace(match[2])
-      if (english && meaning) {
-        return { english, meaning }
-      }
-    }
-  }
-
-  const tokens = trimmed.split(/\s{2,}|\t/)
-  if (tokens.length >= 2) {
-    const first = normalizeWhitespace(tokens[0])
-    const second = normalizeWhitespace(tokens.slice(1).join(' '))
-    if (first && second && /^[A-Za-z]/.test(first) && /[가-힣]/.test(second)) {
-      return { english: first, meaning: second }
-    }
-  }
-
-  return null
-}
-
-const parseWordsFromRawText = (rawText: string) => {
-  const lines = rawText
-    .split(/\r?\n/)
-    .map((line) => normalizeWhitespace(line))
-    .filter(Boolean)
-
-  const parsedWords: OcrDraftWord[] = []
-
-  for (const line of lines) {
-    const pair = parseWordPairLine(line)
-    if (!pair) continue
-
-    const alreadyExists = parsedWords.some(
-      (item) => item.english.toLowerCase() === pair.english.toLowerCase() && item.meaning === pair.meaning,
-    )
-
-    if (!alreadyExists) {
-      parsedWords.push({
-        id: buildWordId(),
-        english: pair.english,
-        meaning: pair.meaning,
-        wordOrder: parsedWords.length + 1,
-      })
-    }
-  }
-
-  if (parsedWords.length === 0) {
-    const candidateWords = lines
-      .map((line) => normalizeWhitespace(line))
-      .filter((line) => line.length > 0)
-      .filter((line) => /[A-Za-z]/.test(line))
-
-    for (let index = 0; index < candidateWords.length; index += 1) {
-      const line = candidateWords[index]
-      const firstToken = line.split(/\s+/)[0]
-      if (firstToken && /^[A-Za-z]/.test(firstToken)) {
-        parsedWords.push({
-          id: buildWordId(),
-          english: firstToken,
-          meaning: '',
-          wordOrder: parsedWords.length + 1,
-        })
-      }
-    }
-  }
-
-  return parsedWords
-}
-
 const chunkWords = (words: OcrDraftWord[]) =>
   words.map((word, index) => ({
     ...word,
     wordOrder: index + 1,
   }))
+
+const createImageElementFromFile = async (file: File) => {
+  const url = URL.createObjectURL(file)
+  try {
+    const image = new Image()
+    image.decoding = 'async'
+    image.src = url
+    await new Promise<void>((resolve, reject) => {
+      image.onload = () => resolve()
+      image.onerror = () => reject(new Error('이미지를 불러오지 못했습니다.'))
+    })
+    return image
+  } finally {
+    URL.revokeObjectURL(url)
+  }
+}
+
+const parseTemplateWordsFromFile = async (file: File) => {
+  const image = await createImageElementFromFile(file)
+  const alignedPages = await detectAlignedPageRegions(image)
+
+  if (!alignedPages.length) {
+    throw new Error('페이지를 찾지 못했습니다. 책 전체가 사진에 들어오도록 다시 촬영해주세요.')
+  }
+
+  const pageRect = getStandardPageRect()
+  const rowRects = getStandardPageRowRects(pageRect)
+  const pages: Array<{ pageIndex: number; words: OcrDraftWord[]; rawText: string }> = []
+
+  for (let pageIndex = 0; pageIndex < alignedPages.length; pageIndex += 1) {
+    const pageCanvas = alignedPages[pageIndex].canvas
+    const lines: string[] = []
+    const parsedWords: OcrDraftWord[] = []
+
+    for (let rowIndex = 0; rowIndex < rowRects.length; rowIndex += 1) {
+      const rowRect = rowRects[rowIndex]
+      const cells = getStandardPageCellRects(rowRect)
+
+      const englishCell = cropRectFromCanvas(pageCanvas, {
+        x: cells.englishArea.x,
+        y: cells.englishArea.y,
+        width: cells.englishArea.width,
+        height: cells.englishArea.height,
+      })
+
+      const koreanCell = cropRectFromCanvas(pageCanvas, {
+        x: cells.koreanArea.x,
+        y: cells.koreanArea.y,
+        width: cells.koreanArea.width,
+        height: cells.koreanArea.height,
+      })
+
+      const englishCanvas = buildEnhancedCanvas(englishCell, 3)
+      const koreanCanvas = buildEnhancedCanvas(koreanCell, 3)
+
+      const englishText = cleanEnglishCandidate(await runSingleLineOcr(englishCanvas, 'eng'))
+      const koreanText = cleanKoreanCandidate(await runSingleLineOcr(koreanCanvas, 'kor'))
+
+      if (englishText || koreanText) {
+        lines.push(`${rowIndex + 1}. ${englishText} / ${koreanText}`)
+      }
+
+      if (englishText) {
+        parsedWords.push({
+          id: buildWordId(),
+          english: englishText,
+          meaning: koreanText,
+          wordOrder: parsedWords.length + 1,
+        })
+      }
+    }
+
+    pages.push({
+      pageIndex,
+      words: parsedWords,
+      rawText: lines.join('\n'),
+    })
+  }
+
+  const allWords = pages.flatMap((page) => page.words)
+  return {
+    pages,
+    allWords,
+    rawText: pages.map((page) => page.rawText).filter(Boolean).join('\n\n'),
+  }
+}
 
 export default function OcrImportModal({ isOpen, profile, onClose, onImported }: OcrImportModalProps) {
   const fileInputRef = useRef<HTMLInputElement | null>(null)
@@ -248,24 +227,22 @@ export default function OcrImportModal({ isOpen, profile, onClose, onImported }:
     setProgress(0)
 
     try {
-      const result = await Tesseract.recognize(selectedFile, 'eng+kor', {
-        logger: (message) => {
-          if ('progress' in message && typeof message.progress === 'number') {
-            setProgress(Math.round(message.progress * 100))
-          }
-        },
-      })
+      const templateResult = await parseTemplateWordsFromFile(selectedFile)
+      const parsedWords = chunkWords(templateResult.allWords)
 
-      const rawText = result.data.text ?? ''
-      const parsedInfo = parseTitleLevelRound(rawText)
-      const parsedWords = chunkWords(parseWordsFromRawText(rawText))
+      setProgress(100)
+
+      if (parsedWords.length === 0) {
+        setError('OCR 결과에서 단어를 찾지 못했습니다. 책 전체가 사진에 들어오도록 다시 촬영해 주세요.')
+        return
+      }
 
       setDraft({
-        title: parsedInfo.title,
-        level: parsedInfo.level,
-        roundNumber: parsedInfo.roundNumber,
+        title: 'EVERYDAY WORDS',
+        level: '',
+        roundNumber: null,
         words: parsedWords,
-        rawText,
+        rawText: templateResult.rawText,
       })
     } catch (err) {
       setError(err instanceof Error ? err.message : 'OCR 처리 중 오류가 발생했습니다.')
