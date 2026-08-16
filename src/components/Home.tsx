@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { supabase } from '../lib/supabase'
 import type { Profile } from '../types/auth'
+import OcrImportModal from './OcrImportModal'
 
 interface WordBook {
   id: string
@@ -51,6 +52,7 @@ export default function Home({ profile, onLogout }: HomeProps) {
   const [loadingWords, setLoadingWords] = useState(false)
   const [savingWord, setSavingWord] = useState(false)
   const [deletingWord, setDeletingWord] = useState(false)
+  const [isOcrOpen, setIsOcrOpen] = useState(false)
   const [editingWord, setEditingWord] = useState<Word | null>(null)
   const [wordToDelete, setWordToDelete] = useState<Word | null>(null)
   const [editEnglish, setEditEnglish] = useState('')
@@ -422,6 +424,14 @@ export default function Home({ profile, onLogout }: HomeProps) {
           <p className="profile-note">{organizationDisplayName}</p>
         </div>
 
+        {canManageRounds ? (
+          <div className="home-action-row">
+            <button type="button" className="secondary-button" onClick={() => setIsOcrOpen(true)}>
+              📷 사진으로 가져오기
+            </button>
+          </div>
+        ) : null}
+
         <div className="learning-layout">
           <div className="panel">
             <h2>단어장 선택</h2>
@@ -512,9 +522,11 @@ export default function Home({ profile, onLogout }: HomeProps) {
                 <p>단어가 없습니다.</p>
               )}
               {canManageRounds ? (
-                <button type="button" className="secondary-button" onClick={startAddWord}>
-                  + 단어 추가
-                </button>
+                <div className="home-action-stack">
+                  <button type="button" className="secondary-button" onClick={startAddWord}>
+                    + 단어 추가
+                  </button>
+                </div>
               ) : null}
             </div>
           ) : null}
@@ -666,6 +678,19 @@ export default function Home({ profile, onLogout }: HomeProps) {
             </div>
           </div>
         </div>
+      ) : null}
+
+      {canManageRounds ? (
+        <OcrImportModal
+          isOpen={isOcrOpen}
+          profile={profile}
+          onClose={() => setIsOcrOpen(false)}
+          onImported={async () => {
+            if (selectedBookId) {
+              await loadRounds(selectedBookId)
+            }
+          }}
+        />
       ) : null}
     </section>
   )
