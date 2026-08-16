@@ -12,8 +12,13 @@ declare global {
   }
 }
 
-const OPENCV_URL = 'https://docs.opencv.org/4.10.0/opencv.js'
+// 4.9.0 is a verified stable release on the official docs.opencv.org CDN
+const OPENCV_URL = 'https://docs.opencv.org/4.9.0/opencv.js'
 let cvPromise: Promise<any> | null = null
+
+const removeOpenCvScript = () => {
+  document.querySelector('script[data-opencv="true"]')?.remove()
+}
 
 const orderPoints = (points: Point[]): OrderedQuadrilateral => {
   const sorted = [...points].sort((a, b) => a.y - b.y)
@@ -41,22 +46,24 @@ const loadOpenCv = (): Promise<any> => {
     return Promise.reject(new Error('브라우저 환경에서만 사용할 수 있습니다.'))
   }
 
-  // Already initialized — cv.Mat is available
+  // Already initialized
   if (window.cv?.Mat) {
     return Promise.resolve(window.cv)
   }
 
   if (!cvPromise) {
+    // Always remove any previous (possibly failed) script element before retrying
+    removeOpenCvScript()
+
     cvPromise = new Promise((resolve, reject) => {
       const waitForInit = () => {
         const cv = window.cv as any
         if (!cv) {
-          cvPromise = null  // allow retry
+          cvPromise = null
           reject(new Error('OpenCV.js가 정상적으로 초기화되지 않았습니다.'))
           return
         }
-
-        // Newer OpenCV.js builds expose cv as a Promise
+        // Newer builds return cv as a Promise
         if (typeof cv.then === 'function') {
           ;(cv as Promise<any>)
             .then((instance: any) => {
@@ -69,24 +76,12 @@ const loadOpenCv = (): Promise<any> => {
             })
           return
         }
-
-        // cv is a Module: wait for onRuntimeInitialized if not ready
+        // Older builds expose cv as a Module
         if (cv.Mat) {
           resolve(cv)
         } else {
           cv.onRuntimeInitialized = () => resolve(window.cv)
         }
-      }
-
-      const existingScript = document.querySelector('script[data-opencv="true"]') as HTMLScriptElement | null
-
-      if (existingScript) {
-        existingScript.addEventListener('load', waitForInit, { once: true })
-        existingScript.addEventListener('error', () => {
-          cvPromise = null
-          reject(new Error('OpenCV.js 로드에 실패했습니다.'))
-        }, { once: true })
-        return
       }
 
       const script = document.createElement('script')
@@ -95,7 +90,8 @@ const loadOpenCv = (): Promise<any> => {
       script.setAttribute('data-opencv', 'true')
       script.onload = waitForInit
       script.onerror = () => {
-        cvPromise = null  // allow retry next time
+        cvPromise = null
+        removeOpenCvScript()
         reject(new Error('OpenCV.js를 불러오지 못했습니다.\nOCR 기능을 사용하려면 인터넷 연결이 필요합니다.'))
       }
       document.head.appendChild(script)
