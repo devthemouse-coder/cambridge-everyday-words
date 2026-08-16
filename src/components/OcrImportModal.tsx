@@ -76,7 +76,7 @@ const parseTemplateWordsFromFile = async (file: File, onProgress: (pct: number) 
   onProgress(5)
   const image = await createImageElementFromFile(file)
   onProgress(10)
-  const alignedPages = await detectAlignedPageRegions(image)
+  const alignedPages = detectAlignedPageRegions(image)   // synchronous canvas split, no WASM
   onProgress(20)
 
   if (!alignedPages.length) {
