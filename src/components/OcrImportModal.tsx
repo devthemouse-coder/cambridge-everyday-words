@@ -164,6 +164,8 @@ const chunkWords = (words: OcrDraftWord[]) =>
 
 export default function OcrImportModal({ isOpen, profile, onClose, onImported }: OcrImportModalProps) {
   const fileInputRef = useRef<HTMLInputElement | null>(null)
+  const cameraInputRef = useRef<HTMLInputElement | null>(null)
+  const galleryInputRef = useRef<HTMLInputElement | null>(null)
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
   const [previewUrl, setPreviewUrl] = useState<string | null>(null)
   const [ocring, setOcring] = useState(false)
@@ -212,6 +214,11 @@ export default function OcrImportModal({ isOpen, profile, onClose, onImported }:
     }
   }
 
+  const triggerImageInput = (mode: 'camera' | 'gallery') => {
+    const targetInput = mode === 'camera' ? cameraInputRef.current : galleryInputRef.current
+    targetInput?.click()
+  }
+
   const handleFileSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0]
     if (!file) return
@@ -226,6 +233,8 @@ export default function OcrImportModal({ isOpen, profile, onClose, onImported }:
     setDraft(null)
     setError(null)
     setProgress(0)
+
+    event.target.value = ''
   }
 
   const handleOcr = async () => {
@@ -553,16 +562,17 @@ export default function OcrImportModal({ isOpen, profile, onClose, onImported }:
           </button>
         </div>
 
-        <label className="file-input-label">
-          이미지 선택
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept="image/*"
-            capture="environment"
-            onChange={handleFileSelect}
-          />
-        </label>
+        <div className="ocr-input-methods">
+          <button type="button" className="secondary-button" onClick={() => triggerImageInput('camera')}>
+            📷 카메라로 촬영
+          </button>
+          <button type="button" className="secondary-button" onClick={() => triggerImageInput('gallery')}>
+            🖼️ 사진 선택
+          </button>
+        </div>
+
+        <input ref={cameraInputRef} type="file" accept="image/*" capture="environment" onChange={handleFileSelect} hidden />
+        <input ref={galleryInputRef} type="file" accept="image/*" onChange={handleFileSelect} hidden />
 
         {previewUrl ? (
           <div className="ocr-image-preview-wrap">

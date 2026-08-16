@@ -482,6 +482,17 @@ button[type='button'].delete-icon-button:hover,
   margin-bottom: 18px;
 }
 
+.ocr-input-methods {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
+.ocr-input-methods .secondary-button {
+  width: 100%;
+}
+
 .ocr-image-preview-wrap {
   margin: 12px 0 18px;
   padding: 12px;
